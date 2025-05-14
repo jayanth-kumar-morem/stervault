@@ -12,9 +12,32 @@ import { useTransactionToast } from '../ui/ui-layout'
 import { BN } from '@coral-xyz/anchor'
 import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getMint, getAssociatedTokenAddress } from '@solana/spl-token'
 import { useDeposits, UserDeposit } from '../deposits/deposits-data-access'
+import { useLendingProgram } from '../lending/lending-data-access'
+import { useSolana } from '../solana/solana-data-access'
 
 // Use the deployed program ID from the anchor deploy output
 const LENDING_PROGRAM_ID = new PublicKey('EZqPMxDtbaQbCGMaxvXS6vGKzMTJvt7p8xCPaBT6155G');
+
+// Move useGetTokenAccount outside to avoid the React Hook error
+async function getTokenAccount(
+  connection: any,
+  owner: PublicKey,
+  mint: PublicKey
+): Promise<PublicKey | null> {
+  try {
+    // Get or create the user's associated token account
+    const associatedTokenAddress = await getAssociatedTokenAddress(
+      mint,
+      owner,
+      false, // Allow owner off-curve
+    );
+    
+    return associatedTokenAddress;
+  } catch (error) {
+    console.error('Error getting associated token address:', error);
+    return null;
+  }
+}
 
 export function useWithdraw() {
   const { connection } = useConnection()
@@ -39,75 +62,46 @@ export function useWithdraw() {
     );
   };
 
-  // Helper function to get or create a token account
-  async function useGetTokenAccount(
-    connection: any,
-    owner: PublicKey,
-    mint: PublicKey
-  ): Promise<PublicKey | null> {
-    try {
-      // Get the associated token address using the SPL token library
-      const associatedTokenAddress = await getAssociatedTokenAddress(
-        mint,
-        owner,
-        false
-      );
-      
-      // Check if the token account exists
-      try {
-        await connection.getTokenAccountBalance(associatedTokenAddress);
-        return associatedTokenAddress;
-      } catch (error) {
-        console.log('Token account does not exist, creating it...');
-        // If it doesn't exist, it might be created during the transaction
-        return associatedTokenAddress;
-      }
-    } catch (error) {
-      console.error('Error checking token account:', error);
-      return null;
-    }
-  }
-
   // Withdraw tokens
   const withdraw = useMutation({
     mutationKey: ['withdraw', { cluster }],
     mutationFn: async ({
-      bankPublicKey,
+      bankId,
       mintAddress,
       amount,
     }: {
-      bankPublicKey: PublicKey
-      mintAddress: PublicKey
-      amount: BN
+      bankId: string;
+      mintAddress: string;
+      amount: number;
     }) => {
-      if (!provider.publicKey) {
-        throw new Error('Wallet not connected');
+      if (!program || !provider) {
+        throw new Error('Program or provider not initialized');
       }
-
+      
       try {
-        console.log('Withdrawing tokens with params:', {
-          bankPublicKey: bankPublicKey.toString(),
-          mintAddress: mintAddress.toString(),
-          amount: amount.toString(),
-          wallet: provider.publicKey.toString(),
-        });
-
-        // Get mint info to verify decimals
-        const mintInfo = await fetchMintInfo(mintAddress);
-        console.log('Mint info:', {
-          decimals: mintInfo.decimals,
-          isInitialized: mintInfo.isInitialized,
-          mintAuthority: mintInfo.mintAuthority?.toString(),
-          supply: mintInfo.supply.toString(),
-        });
-
+        console.log(`Withdrawing ${amount} tokens from bank ${bankId}`);
+        
+        // Parse public keys
+        const bankPublicKey = new PublicKey(bankId);
+        const mintAddress = new PublicKey(mintAddress);
+        
+        // Fetch deposit to get metadata
+        const deposit = getDeposit(bankId, mintAddress.toString());
+        if (!deposit) {
+          throw new Error('No deposit found for this bank and mint address');
+        }
+        
+        // Convert the amount to the correct format based on mint decimals
+        const decimals = deposit.mintDecimals;
+        const adjustedAmount = new BN(amount * Math.pow(10, decimals));
+        
         // Find the PDA for the user account
         const [userAccountPDA] = PublicKey.findProgramAddressSync(
-          [provider.publicKey.toBuffer(), mintAddress.toBuffer()],
+          [Buffer.from('user'), provider.publicKey.toBuffer()],
           programId
         );
         console.log('User Account PDA:', userAccountPDA.toString());
-
+        
         // Find the PDA for the bank token account
         const [bankTokenAccountPDA] = PublicKey.findProgramAddressSync(
           [Buffer.from('treasury'), mintAddress.toBuffer()],
@@ -116,7 +110,7 @@ export function useWithdraw() {
         console.log('Bank Token Account PDA:', bankTokenAccountPDA.toString());
 
         // Get the user's associated token account
-        const associatedTokenAddress = await useGetTokenAccount(connection, provider.publicKey, mintAddress);
+        const associatedTokenAddress = await getTokenAccount(connection, provider.publicKey, mintAddress);
         
         if (!associatedTokenAddress) {
           throw new Error('Unable to find or create a token account for this mint');

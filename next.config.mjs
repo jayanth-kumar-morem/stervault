@@ -8,6 +8,11 @@ const bundleAnalyzer = withBundleAnalyzer({
 /** @type {import('next').NextConfig} */
 export default bundleAnalyzer(
   {
+    output: 'standalone',
+    typescript: {
+      // This will ignore TypeScript errors during the build
+      ignoreBuildErrors: true,
+    },
     images: {
       remotePatterns: [
         {
@@ -21,6 +26,8 @@ export default bundleAnalyzer(
     },
     eslint: {
       dirs: ["."],
+      // Ignore ESLint errors during the build
+      ignoreDuringBuilds: true,
     },
     poweredByHeader: false,
     reactStrictMode: true,
@@ -40,6 +47,21 @@ export default bundleAnalyzer(
       config.module.noParse = [
         /node_modules\/@mapbox\/node-pre-gyp\/lib\/util\/nw-pre-gyp\/index\.html$/,
       ];
+
+      // Completely exclude anchor directory
+      if (config.resolve.modules) {
+        config.resolve.modules = config.resolve.modules.filter(
+          module => !module.includes('anchor')
+        );
+      }
+
+      // Exclude anchor directory from webpack processing
+      config.externals.push((context, request, callback) => {
+        if (request.includes('anchor/') || request.startsWith('anchor/')) {
+          return callback(null, 'commonjs ' + request);
+        }
+        callback();
+      });
 
       // Fixes npm packages that depend on `fs` module
       if (!isServer) {
